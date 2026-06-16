@@ -1,0 +1,26 @@
+# LiteLLM gateway — пример конфигурации (образец).
+# Единая OpenAI-совместимая точка к моделям. Провайдеры и ключи — через env,
+# в файл секреты не пишем. Документация: https://docs.litellm.ai
+#
+# Скопируйте в config.yaml и подставьте свои модели.
+
+model_list:
+  # --- основной провайдер ---
+  - model_name: hermes-agent              # имя, под которым агент дергает модель
+    litellm_params:
+      model: openai/<your-model>          # напр. openai/gpt-4o, anthropic/claude-..., openrouter/...
+      api_base: ${PRIMARY_API_BASE}       # из env
+      api_key: ${PRIMARY_API_KEY}         # из env, НЕ хардкодить
+
+  # --- запасной провайдер (фолбэк) ---
+  - model_name: hermes-agent-fallback
+    litellm_params:
+      model: openrouter/<fallback-model>
+      api_key: ${FALLBACK_API_KEY}
+
+router_settings:
+  fallbacks: [{"hermes-agent": ["hermes-agent-fallback"]}]
+
+general_settings:
+  master_key: ${LITELLM_MASTER_KEY}       # openssl rand -hex 24, из env
+  database_url: ${LITELLM_DATABASE_URL}   # postgres для виртуальных ключей (опционально)

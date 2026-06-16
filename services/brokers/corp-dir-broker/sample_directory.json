@@ -1,0 +1,26 @@
+[
+  {
+    "email": "alice@example.com",
+    "full_name": "Alice Ivanova",
+    "position": "Project Manager",
+    "org_unit": "Delivery",
+    "telegram_id": "111111111",
+    "manager_email": "carol@example.com"
+  },
+  {
+    "email": "bob@example.com",
+    "full_name": "Bob Petrov",
+    "position": "Estimator",
+    "org_unit": "Procurement",
+    "telegram_id": "222222222",
+    "manager_email": "carol@example.com"
+  },
+  {
+    "email": "carol@example.com",
+    "full_name": "Carol Sidorova",
+    "position": "Head of Delivery",
+    "org_unit": "Delivery",
+    "telegram_id": "333333333",
+    "manager_email": null
+  }
+]

@@ -1,0 +1,189 @@
+# ======================================================================
+# Hermes Corp Platform — топология для self-hosted развёртывания.
+# По умолчанию поднимает ВСЁ на заглушках (brokers на моках),
+# чтобы можно было запустить и потрогать без единого реального секрета.
+#
+#   cp .env.example .env && docker compose up -d
+#
+# Точки замены на свою инфраструктуру помечены  # REPLACE:
+# ======================================================================
+
+services:
+
+  # ---- Базовый агент (админ-инстанс) ----------------------------------
+  # REPLACE: образ NousResearch/Hermes-Agent. Соберите свой или возьмите тег.
+  hermes-agent:
+    image: ${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+    container_name: hermes-agent
+    command: gateway run
+    restart: unless-stopped
+    environment:
+      - API_SERVER_KEY=${HERMES_API_KEY}
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_API_KEY=${LLM_API_KEY}
+    ports: ["127.0.0.1:8642:8642"]
+    networks: [hermes]
+
+  # ---- Identity proxy: кто пришёл и куда роутить ----------------------
+  identity-proxy:
+    build: ./services/identity-proxy
+    container_name: identity-proxy
+    restart: unless-stopped
+    environment:
+      - BROKER_INTERNAL_AUTH=${BROKER_INTERNAL_AUTH}
+      - HERMES_API_URL=http://hermes-agent:8642
+      - HERMES_API_KEY=${HERMES_API_KEY}
+      - PROVISIONER_URL=http://provisioner:8650
+      - CORP_DIR_URL=http://corp-dir-broker:8652
+      - SECURITY_DETECTION_ENABLED=true
+      - SECURITY_BLOCK_ON_DETECTION=true
+    ports: ["127.0.0.1:8643:8643"]
+    networks: [hermes]
+    depends_on: [corp-dir-broker, provisioner]
+
+  # ---- Key-broker: изоляция per-user LLM-ключей ----------------------
+  # REPLACE: заглушка на HMAC+in-memory. Для прода — postgres+pgcrypto
+  # или LiteLLM /key/generate (см. services/key-broker/IMPLEMENT.md).
+  key-broker:
+    build: ./services/key-broker
+    container_name: key-broker
+    restart: unless-stopped
+    environment:
+      - KEYBROKER_SYSTEM_SECRET=${KEYBROKER_SYSTEM_SECRET}
+    ports: ["127.0.0.1:8700:8700"]
+    networks: [hermes]
+
+  # ---- Provisioner: по контейнеру на пользователя --------------------
+  provisioner:
+    build: ./services/provisioner
+    container_name: provisioner
+    restart: unless-stopped
+    environment:
+      - HERMES_IMAGE=${HERMES_IMAGE:-nousresearch/hermes-agent:latest}
+      - HERMES_API_KEY=${HERMES_API_KEY}
+      - HERMES_DOCKER_NETWORK=hermes_hermes
+      - CONTAINER_PREFIX=hermes-u-
+      # Срезаем секреты платформы при создании user-runtime (см. SECURITY.md)
+      - USER_RUNTIME_STRIP_ENV_PREFIXES=TELEGRAM_,DISCORD_,SLACK_
+      - USER_RUNTIME_STRIP_ENV_KEYS=LLM_API_KEY,FALLBACK_API_KEY
+      # key-broker: per-user LLM-ключи (см. services/key-broker/README.md)
+      - KEYBROKER_URL=http://key-broker:8700
+      - KEYBROKER_SYSTEM_SECRET=${KEYBROKER_SYSTEM_SECRET}
+      # Telegram MUX: fake-токены для user-runtime (реальный бот остаётся скрытым)
+      - TELEGRAM_MUX_SECRET=${TELEGRAM_MUX_SECRET}
+      - TELEGRAM_MUX_BOT_ID=${TELEGRAM_MUX_BOT_ID}
+      # Режим инъекции config.yaml в user-runtime: copy (безопаснее) | mount
+      - USER_RUNTIME_CONFIG_MODE=${USER_RUNTIME_CONFIG_MODE:-copy}
+      # Режим передачи auth: none (рекомендуется) | copy | mount
+      - USER_RUNTIME_AUTH_MODE=${USER_RUNTIME_AUTH_MODE:-none}
+      # Язык ответов агентов
+      - RUNTIME_LANGUAGE=${RUNTIME_LANGUAGE:-en}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock   # provisioner управляет контейнерами
+      - ./users:/opt/hermes/users
+    ports: ["127.0.0.1:8650:8650"]
+    networks: [hermes]
+    depends_on: [key-broker]
+
+  # ---- Брокеры (ЗАГЛУШКИ — заменяете на свои системы) ----------------
+  corp-dir-broker:        # REPLACE: ваш HRIS / LDAP / AD
+    build: ./services/brokers/corp-dir-broker
+    container_name: corp-dir-broker
+    restart: unless-stopped
+    environment:
+      - BROKER_INTERNAL_AUTH=${BROKER_INTERNAL_AUTH}
+    ports: ["127.0.0.1:8652:8652"]
+    networks: [hermes]
+
+  files-broker:           # REPLACE: Yandex 360 / Google Drive / S3
+    build: ./services/brokers/files-broker
+    container_name: files-broker
+    restart: unless-stopped
+    environment:
+      - BROKER_INTERNAL_AUTH=${BROKER_INTERNAL_AUTH}
+    ports: ["127.0.0.1:8651:8651"]
+    networks: [hermes]
+
+  tasks-broker:           # REPLACE: Kaiten / Jira / YouTrack
+    build: ./services/brokers/tasks-broker
+    container_name: tasks-broker
+    restart: unless-stopped
+    environment:
+      - BROKER_INTERNAL_AUTH=${BROKER_INTERNAL_AUTH}
+    ports: ["127.0.0.1:8654:8654"]
+    networks: [hermes]
+
+  # ---- LLM gateway: единая точка к моделям (образец: LiteLLM) ---------
+  # Образец конфигурации — services/llm-gateway/config.example.yaml.
+  # Скопируйте в config.yaml и подставьте свои модели/ключи (через env).
+  llm-gateway:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: llm-gateway
+    restart: unless-stopped
+    command: ["--config", "/app/config.yaml", "--port", "4000"]
+    environment:
+      - LITELLM_MASTER_KEY=${LLM_API_KEY}
+      # REPLACE: ключи провайдеров — только через env, см. config.example.yaml
+    volumes:
+      - ./services/llm-gateway/config.example.yaml:/app/config.yaml:ro
+    ports: ["127.0.0.1:4000:4000"]
+    networks: [hermes]
+
+  # ---- Web UI: ОСНОВНОЙ интерфейс работы пользователя -----------------
+  # Сотрудник входит в OpenWebUI (SSO/логин), а тот ходит к моделям через
+  # identity-proxy. ENABLE_FORWARD_USER_INFO_HEADERS=true заставляет OpenWebUI
+  # пробрасывать email вошедшего заголовком X-OpenWebUI-User-Email — по нему
+  # proxy резолвит личность и роутит в персональный runtime. Второй канал —
+  # Telegram (подписанный webhook) — равноправен, см. docs/ARCHITECTURE.md.
+  # Полная настройка (env + Admin Panel + SSO) — services/openwebui/README.md.
+  openwebui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: openwebui
+    restart: unless-stopped
+    environment:
+      - OPENAI_API_BASE_URL=http://identity-proxy:8643/v1
+      - OPENAI_API_KEY=${HERMES_API_KEY}
+      - WEBUI_AUTH=true
+      - ENABLE_FORWARD_USER_INFO_HEADERS=true   # проброс личности в proxy
+      - WEBUI_NAME=Corp AI
+      # REPLACE: подключите ваш SSO/OIDC, чтобы личности можно было доверять.
+    ports: ["127.0.0.1:8085:8080"]
+    networks: [hermes]
+    depends_on: [identity-proxy]
+
+  # ---- Telegram gateway: один бот → много пользователей (MUX) ---------
+  # Заглушка: принимает webhook, резолвит tg_id через corp-dir, форвардит
+  # в proxy. Полное описание MUX/онбординга — docs/TELEGRAM_MUX.md.
+  telegram-gateway:
+    build: ./services/telegram-gateway
+    container_name: telegram-gateway
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_WEBHOOK_SECRET=${TELEGRAM_WEBHOOK_SECRET}
+      - CORP_DIR_URL=http://corp-dir-broker:8652
+      - PROXY_URL=http://identity-proxy:8643
+      - BROKER_INTERNAL_AUTH=${BROKER_INTERNAL_AUTH}
+    ports: ["127.0.0.1:8653:8653"]
+    networks: [hermes]
+    depends_on: [identity-proxy, corp-dir-broker]
+
+  # ---- Admin panel: веб-панель оператора --------------------------------
+  # Данные пользователей — из corp-dir-broker, остальное — образцовые метрики.
+  # Бренд настраивается через ADMIN_PANEL_BRAND. См. services/admin-panel/README.md.
+  admin-panel:
+    build: ./services/admin-panel
+    container_name: admin-panel
+    restart: unless-stopped
+    environment:
+      - ADMIN_PANEL_BRAND=${ADMIN_PANEL_BRAND:-Corp AI}
+      - ADMIN_UI_PASSWORD=${ADMIN_UI_PASSWORD}
+      - CORP_DIR_URL=http://corp-dir-broker:8652
+      - PROVISIONER_URL=http://provisioner:8650
+      - BROKER_INTERNAL_AUTH=${BROKER_INTERNAL_AUTH}
+    ports: ["127.0.0.1:8655:8655"]
+    networks: [hermes]
+    depends_on: [corp-dir-broker]
+
+networks:
+  hermes:
+    name: hermes_hermes

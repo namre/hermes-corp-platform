@@ -1,0 +1,29 @@
+# secrets — NEVER commit
+.env
+*.env
+!.env.example
+*.key
+*.pem
+*_key
+*_key.pub
+auth.json
+
+# runtime data
+users/
+*-data/
+*.db
+*.sqlite
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# os / editor
+.DS_Store
+.idea/
+.vscode/
+
+# local preview renders (not shipped)
+.preview/
